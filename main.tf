@@ -1,5 +1,5 @@
 provider "aws" {
-  region = "ap-northeast-2"
+  region = var.aws_region
 }
 # Ubuntu AMI 검색
 data "aws_ami" "ubuntu" {
@@ -17,27 +17,85 @@ data "aws_ami" "ubuntu" {
 
 # VPC
 resource "aws_vpc" "main" {
-  cidr_block = "10.0.0.0/16"
+  cidr_block = var.vpc_cidr
+
+  tags = {
+    Name = "main-vpc"
+  }
 }
 
 # Public Subnet for NGINX
 resource "aws_subnet" "public" {
   vpc_id                  = aws_vpc.main.id
-  cidr_block              = "10.0.1.0/24"
+  cidr_block              = var.public_subnet_cidr
+  availability_zone = var.availability_zone
   map_public_ip_on_launch = true
+
+  tags = {
+    Name = "public-subnet"
+  }
 }
 
 # Private Subnet for Front and Back
 resource "aws_subnet" "private" {
   vpc_id     = aws_vpc.main.id
-  cidr_block = "10.0.2.0/24"
+  cidr_block = var.private_subnet_cidr
+  availability_zone = var.availability_zone
+  tags = {
+    Name = "private-subnet"
+  }
 }
-
 # Internet Gateway for Public Subnet
-resource "aws_internet_gateway" "main" {
+resource "aws_internet_gateway" "igw" {
   vpc_id = aws_vpc.main.id
+
+  tags = {
+    Name = "main-igw"
+  }
+}
+# 퍼블릭 라우팅 테이블 생성
+resource "aws_route_table" "public" {
+  vpc_id = aws_vpc.main.id
+
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_internet_gateway.igw.id
+  }
+
+  tags = {
+    Name = "public-route-table"
+  }
 }
 
+resource "aws_route_table_association" "public_association" {
+  subnet_id      = aws_subnet.public.id
+  route_table_id = aws_route_table.public.id
+}
+
+resource "aws_eip" "nat_eip" {
+  domain = "vpc"
+}
+resource "aws_nat_gateway" "nat" {
+  allocation_id = aws_eip.nat_eip.id
+  subnet_id     = aws_subnet.public.id
+}
+resource "aws_route_table" "private" {
+  vpc_id = aws_vpc.main.id
+
+  route {
+    cidr_block     = "0.0.0.0/0"
+    nat_gateway_id = aws_nat_gateway.nat.id
+  }
+
+  tags = {
+    Name = "private-route-table"
+  }
+}
+# 라우팅 테이블을 프라이빗 서브넷에 연결
+resource "aws_route_table_association" "private_association" {
+  subnet_id      = aws_subnet.private.id
+  route_table_id = aws_route_table.private.id
+}
 # Security Group for all instances
 resource "aws_security_group" "instance_sg" {
   vpc_id = aws_vpc.main.id
@@ -89,10 +147,10 @@ resource "aws_security_group" "instance_sg" {
 # NGINX instance (Public Subnet)
 resource "aws_instance" "nginx" {
   ami           = data.aws_ami.ubuntu.id
-  instance_type = "t3.medium"
+  instance_type = var.instance_type
   subnet_id     = aws_subnet.public.id
   vpc_security_group_ids = [aws_security_group.instance_sg.id]
-  key_name      = "chatniverse"
+  key_name      = var.key_name
   tags = {
     Name = "nginx-server"
   }
@@ -101,11 +159,10 @@ resource "aws_instance" "nginx" {
 # Frontend instance (Private Subnet)
 resource "aws_instance" "frontend" {
   ami           = data.aws_ami.ubuntu.id
-  instance_type = "t3.medium"
+  instance_type = var.instance_type
   subnet_id     = aws_subnet.private.id
   vpc_security_group_ids = [aws_security_group.instance_sg.id]
-  key_name      = "chatniverse"
-
+  key_name      = var.key_name
   tags = {
     Name = "frontend-server"
   }
@@ -114,10 +171,10 @@ resource "aws_instance" "frontend" {
 # Backend instance (Private Subnet)
 resource "aws_instance" "backend" {
   ami           = data.aws_ami.ubuntu.id
-  instance_type = "t3.large"
+  instance_type = var.instance_type_back
   subnet_id     = aws_subnet.private.id
   vpc_security_group_ids = [aws_security_group.instance_sg.id]
-  key_name      = "chatniverse"
+  key_name      = var.key_name
   user_data = <<-EOF
               #!/bin/bash
               sudo apt-get update -y
@@ -135,6 +192,11 @@ resource "aws_instance" "backend" {
               sudo chmod +x /usr/local/bin/docker-compose
               sudo ln -s /usr/local/bin/docker-compose /usr/bin/docker-compose
 
+              sudo mkdir /app
+              sudo chown ubuntu:ubuntu /app
+              cd /app
+              sudo git clone https://github.com/Chat-niverse/ai || { echo 'Git 클론 실패' ; exit 1; }
+              sudo git clone https://github.com/Chat-niverse/Chat-niverse_BE || { echo 'Git 클론 실패' ; exit 1; }
 
               EOF
   tags = {
