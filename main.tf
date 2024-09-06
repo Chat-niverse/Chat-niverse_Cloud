@@ -123,12 +123,17 @@ resource "aws_security_group" "instance_sg" {
   }
 
   ingress {
-    from_port   = 3000
-    to_port     = 3000
+    from_port   = 5173
+    to_port     = 5173
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
-
+  ingress {
+    from_port   = 5000
+    to_port     = 5000
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
   ingress {
     from_port   = 8080
     to_port     = 8080
@@ -160,9 +165,36 @@ resource "aws_instance" "nginx" {
 resource "aws_instance" "frontend" {
   ami           = data.aws_ami.ubuntu.id
   instance_type = var.instance_type
-  subnet_id     = aws_subnet.private.id
+  subnet_id     = aws_subnet.public.id
   vpc_security_group_ids = [aws_security_group.instance_sg.id]
   key_name      = var.key_name
+  user_data = <<-EOF
+              #!/bin/bash
+              # 시스템 업데이트
+              sudo apt-get update -y
+              sudo apt-get upgrade -y
+
+              # Node.js 및 npm 설치
+              sudo apt-get install -y nodejs npm
+
+              # NVM 설치
+              wget -qO- https://raw.githubusercontent.com/nvm-sh/nvm/v0.37.2/install.sh | bash
+              export NVM_DIR="$HOME/.nvm"
+              [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"  # 이 줄로 NVM 활성화
+
+              # Node.js 설치 (NVM으로)
+              nvm install 20.15.0
+
+              # 애플리케이션 클론 및 설치
+              cd /home/ubuntu
+              sudo git clone https://github.com/Chat-niverse/Chat-niverse_FE || { echo 'Git 클론 실패' ; exit 1; }
+              cd Chat-niverse_FE
+              sudo npm install
+
+              # Vite 서버 실행
+              sudo nohup npm run dev -- --host > /home/ubuntu/output.log 2>&1 &
+
+              EOF
   tags = {
     Name = "frontend-server"
   }
@@ -172,7 +204,7 @@ resource "aws_instance" "frontend" {
 resource "aws_instance" "backend" {
   ami           = data.aws_ami.ubuntu.id
   instance_type = var.instance_type_back
-  subnet_id     = aws_subnet.private.id
+  subnet_id     = aws_subnet.public.id
   vpc_security_group_ids = [aws_security_group.instance_sg.id]
   key_name      = var.key_name
   user_data = <<-EOF
@@ -192,11 +224,13 @@ resource "aws_instance" "backend" {
               sudo chmod +x /usr/local/bin/docker-compose
               sudo ln -s /usr/local/bin/docker-compose /usr/bin/docker-compose
 
-              sudo mkdir /app
-              sudo chown ubuntu:ubuntu /app
-              cd /app
+              cd /home/ubuntu
               sudo git clone https://github.com/Chat-niverse/ai || { echo 'Git 클론 실패' ; exit 1; }
               sudo git clone https://github.com/Chat-niverse/Chat-niverse_BE || { echo 'Git 클론 실패' ; exit 1; }
+
+              cd Chat-niverse_BE
+              docker build -t chatniverse_be .
+              docker run -d -p 8080:8080 chatniverse_be
 
               EOF
   tags = {
